@@ -7,8 +7,12 @@ enum class Cell
 	Selected,
 	Start,
 	Goal,
+	Route,
+	Finded,
 };
 
+/// @brief ランダムな点を生成
+/// @return Cell::Startの座標
 Point RandomFill(Grid<Cell> &grid)
 {
 	for (auto y : Range(1, grid.height()-2))
@@ -21,9 +25,52 @@ Point RandomFill(Grid<Cell> &grid)
 
 	Point st = Point(Random(1ull, grid.width() - 2), Random(1ull, grid.height() - 2));
 	Point gl = Point(Random(1ull, grid.width() - 2), Random(1ull, grid.height() - 2));
-	grid[st.y][st.x] = Cell::Start;
-	grid[gl.y][gl.x] = Cell::Goal;
+	grid[st] = Cell::Start;
+	grid[gl] = Cell::Goal;
 
+	return st;
+}
+
+/// @brief 穴掘り法を用いた迷路生成
+/// @return Cell::Startの座標
+Point MakeMaze(Grid<Cell>& grid)
+{
+	// 迷路の初期化
+	grid.fill(Cell::Block);
+
+	// 穴掘り法で迷路を生成
+	Point st = Point(Random(1ull, grid.width() - 2), Random(1ull, grid.height() - 2));
+	grid[st] = Cell::Start;
+	Point gl = Point(Random(1ull, grid.width() - 2), Random(1ull, grid.height() - 2));
+	grid[gl] = Cell::Goal;
+
+	Array<Point> d = { {1,0},{0,1},{-1,0},{0,-1} };
+
+	// ラムダ式による再帰
+	std::function<void(Point)> dig = [&](Point now) -> void
+	{
+		grid[now] = Cell::Empty;
+		d.shuffle();
+		for (int i : step(4))
+		{
+			Point next = now + d[i];
+			Point n_next = next + d[i];
+
+			if (! (0 < n_next.x && n_next.x < grid.width() - 1 && 0 < n_next.y && n_next.y < grid.height() - 1) )
+			{
+				return;
+			}
+
+			if (grid[next] == Cell::Block && grid[n_next] == Cell::Block)
+			{
+				grid[next] = Cell::Empty;
+				dig(n_next);
+			}
+		}
+	};
+
+	dig(st);
+	grid[st] = Cell::Start;
 	return st;
 }
 
@@ -36,44 +83,59 @@ void CopyToImage(const Grid<Cell>& grid, Image& image)
 		{
 			Cell cell = grid[y + 1][x + 1];
 			if (cell == Cell::Block) image[y][x] = Palette::Green;
-			if (cell == Cell::Empty) image[y][x] = Palette::Black;
+			if (cell == Cell::Empty || cell == Cell::Finded) image[y][x] = Palette::Black;
 			if (cell == Cell::Selected) image[y][x] = Palette::Orange;
 			if (cell == Cell::Start) image[y][x] = Palette::Red;
 			if (cell == Cell::Goal) image[y][x] = Palette::Blue;
+			if (cell == Cell::Route) image[y][x] = Palette::Floralwhite;
 		}
 	}
 }
 
-void Update(Grid<Cell>& grid, std::stack<Point> &st)
+/// @brief 深さ優先探索で迷路を解く
+/// @param grid : 迷路のマップ
+/// @param stack : dfsで探索するためのスタック
+/// @param route : スタートからゴールまでの経路を保存するスタック
+void Update(Grid<Cell>& grid, std::stack<Point> &stack, std::stack<Point> &route)
 {
-	// dfsで迷路を解く
-
-	if (st.empty())
+	if (stack.empty())
 	{
 		Print << U"NO ROUTE!!";
 		return;
 	}
 
 	// 1ステップ進める
-	Point p = st.top();
-	st.pop();
+	Point p = stack.top();
 	if (grid[p.y][p.x] == Cell::Goal)
 	{
-		// ここにスタートからゴールまでの経路を表示する処理を書く
-		Print << U"END!!";
+		// ゴールが見つかっているので、スタートからゴールまでの経路を表示する
+		while (!route.empty())
+		{
+			Point r = route.top();
+			grid[r.y][r.x] = Cell::Route;
+			route.pop();
+		}
+		return;
 	}
 
-	if (grid[p.y][p.x] == Cell::Block) return;
+	stack.pop(); // ゴールが見つかったら無限ループするようにここで取り出す
 
-	grid[p.y][p.x] = Cell::Selected;
+	// ブロックなら進まない
+	if (grid[p] == Cell::Block) return;
+
+	// 現在地を探索済みにする
+	grid[p] = Cell::Finded;
+	route.push(p);
+
 	Array<Point> d = { {1,0},{0,1},{-1,0},{0,-1} };
 	d.shuffle();
-
 	for (int i : step(4))
 	{
 		if (grid[p.y + d[i].y][p.x + d[i].x] == Cell::Empty || grid[p.y + d[i].y][p.x + d[i].x] == Cell::Goal)
 		{
-			st.push(Point(p.x + d[i].x, p.y + d[i].y));
+			Point next = Point(p.x + d[i].x, p.y + d[i].y);
+			if(grid[next.y][next.x] == Cell::Empty) grid[next.y][next.x] = Cell::Selected;
+			stack.push(next);
 		}
 	}
 
@@ -87,6 +149,7 @@ void Main()
 	constexpr int32 width = 60;
 	constexpr int32 height = 60;
 
+	// [{1,1}, {width, height}] の範囲
 	Grid<Cell> grid(width + 2, height + 2, Cell::Empty);
 	for (auto y : step(grid.height()))
 	{
@@ -112,6 +175,7 @@ void Main()
 	bool updated = false;
 
 	std::stack<Point> stack;
+	std::stack<Point> route;
 
 	while (System::Update())
 	{
@@ -119,15 +183,24 @@ void Main()
 		if (SimpleGUI::ButtonAt(U"Random", Vec2{ 700, 40 }, 170))
 		{
 			Point st = RandomFill(grid);
-			stack = std::stack<Point>(); // stackの初期化
+			stack = std::stack<Point>();
+			stack.push(st);
+			updated = true;
+		}
+
+		// 迷路を生成するボタン
+		if (SimpleGUI::ButtonAt(U"Maze", Vec2{ 700, 80 }, 170))
+		{
+			Point st = MakeMaze(grid);
+			stack = std::stack<Point>();
 			stack.push(st);
 			updated = true;
 		}
 
 		// フィールドのセルをすべてemptyにするボタン
-		if (SimpleGUI::ButtonAt(U"Clear", Vec2{ 700, 80 }, 170))
+		if (SimpleGUI::ButtonAt(U"Clear", Vec2{ 700, 120 }, 170))
 		{
-			stack = std::stack<Point>(); // stackの初期化
+			stack = std::stack<Point>();
 			grid.fill(Cell::Empty);
 			updated = true;
 		}
@@ -139,12 +212,12 @@ void Main()
 		}
 
 		// 更新頻度変更スライダー
-		SimpleGUI::SliderAt(U"Speed", speed, 1.0, 0.1, Vec2{ 700, 200 }, 70, 100);
+		SimpleGUI::SliderAt(U"Speed", speed, 1.0, 0.02, Vec2{ 700, 200 }, 70, 100);
 
 		// 1 ステップ進めるボタン、または更新タイミングの確認
 		if (SimpleGUI::ButtonAt(U"Step", Vec2{ 700, 240 }, 170) || (autoStep && stopwatch.sF() >= (speed * speed)))
 		{
-			Update(grid, stack);
+			Update(grid, stack, route);
 			updated = true;
 			stopwatch.restart();
 		}
